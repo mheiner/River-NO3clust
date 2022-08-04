@@ -3,6 +3,9 @@
 ## for France time series
 ##
 
+## Catchment area not included in clustering model, but appears in imputation.
+## Data source for catchment area: https://www.data.gouv.fr/ fr/datasets/bd-alti-r-75- m-250-m-1-000-m/
+
 ## Libraries that I need
 library(tidyverse)
 library(DataExplorer)

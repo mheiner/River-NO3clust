@@ -1,11 +1,16 @@
 library(tidyverse)
 
-source("0_readData.R")
+source("scripts/0_readData.R")
+
+## Catchment area not included in clustering model, but appears in imputation.
+## Data source for catchment area: https://www.data.gouv.fr/ fr/datasets/bd-alti-r-75- m-250-m-1-000-m/
+
 
 X <- rivers %>% group_by(CDSTATIONM) %>%
   summarize(Department=unique(LBDEPARTEM), lat=unique(lat)[1], lon=unique(lon)[1], 
             area=mean(area),
-            altitude=unique(altitude)[1], elevation=mean(elevation+2),
+            # altitude=unique(altitude)[1], 
+            elevation=mean(elevation+2),
             bioGeoRegion=unique(bioGeoRegion), IDPR=mean(IDPR),
             annual_specific_runoff=mean(annual_specific_runoff),
             p_sedimentay=mean(p_sedimentay),
@@ -27,13 +32,12 @@ colnames(X)[(ncol(X)-2):ncol(X)] <- paste0("V", 1:3)
 head(X)
 dim(X)
 
-plot(X$altitude, X$elevation) # keep elevation (elevation + 2 was used in model)
-
 summary(X)
 
 library("corrplot")
 corrplot.mixed(cor(X[,-grep("lat|lon|altitude|Depart|Intercept|CDSTATIONM|V", colnames(X))] %>% 
-                     mutate(log_area=log(area), log_elev=log(elevation+2), log_runoff=log(annual_specific_runoff)) %>% 
+                     mutate(log_area=log(area), 
+                            log_elev=log(elevation+2), log_runoff=log(annual_specific_runoff)) %>% 
                      select(., -c("area", "elevation", "annual_specific_runoff")) %>%
                      model.matrix(~. - 1 + bioGeoRegion*log_runoff, data=.)
 ),
@@ -54,7 +58,7 @@ corrplot.mixed(cor(X[,-grep("lat|lon|altitude|Depart|Intercept|CDSTATIONM|V", co
 tl.pos="lt")
 
 
-pdf(file="FrancePlots/corrplotX.pdf", width=9, height=8.4)
+pdf(file="plots/corrplotX.pdf", width=9, height=8.4)
 corrplot.mixed(cor(X[,-grep("lat|lon|altitude|Depart|Intercept|CDSTATIONM|V", colnames(X))] %>% 
                      mutate(log_area=log(area), log_elev=log(elevation+2), log_runoff=log(annual_specific_runoff)) %>% 
                      select(., -c("area", "elevation", "annual_specific_runoff")) %>%
@@ -114,7 +118,7 @@ plt = france.plot + # france.plot.dep too messy
         # plot.background=element_blank()
         )
 
-ggsave("FrancePlots/XbioGeoRegion.pdf", plt, height=5, width=6.5)
+ggsave("plots/XbioGeoRegion.pdf", plt, height=5, width=6.5)
 
 summary(X)
 
@@ -208,58 +212,4 @@ france.plot +
 plot(log(X$annual_specific_runoff), log(X$elevation))
 ggplot(X, aes(x=log(elevation+2), y=log(annual_specific_runoff), color=bioGeoRegion)) + geom_point()
 ggplot(X, aes(x=log(elevation+2), y=log(annual_specific_runoff), color=p_agricole_tot)) + geom_point()
-
-
-
-## Amplitude vs intercept (in Brittany)
-Depts = unique(X$Department)
-Depts[grep("MORB", Depts)]
-Britt = c("COTES-D'ARMOR", "FINISTERE", "MORBIHAN")
-
-plot(amp.pm, int.pm, col= c("black", "red")[X$Department %in% Britt + 1])
-
-## Amplitude vs runoff (in Brittany)
-plot(amp.pm, X$annual_specific_runoff, col= c("black", "red")[X$Department %in% Britt + 1])
-
-
-## relative amplitude
-
-
-
-
-
-rel_amp = amp.pm / (int.pm + abs(min(int.pm)) + 0.01)
-hist(rel_amp)
-hist(rel_amp[abs(rel_amp)<2])
-
-plt = france.plot + 
-  geom_point(data=cbind(X, rel_amp=rel_amp), aes(x=lon, y=lat, 
-                                                 color=rel_amp), size=.6) +
-  labs(color="Relative amplitude") + 
-  scale_color_distiller(palette="RdYlBu", trans="log")
-
-ggsave(paste0("FrancePlots/map_RelativeAmplitude_", modK, "_7yr.pdf"), plt, height=6, width=7)
-
-plot(X$annual_specific_runoff, log(rel_amp))
-
-boxplot(X$annual_specific_runoff ~ X$bioGeoRegion)
-# include interaction between georegion and runoff
-# subset within phase groups and look at covariate-characteristic relationships
-
-
-
-
-## distribution of descriptors by cluster
-
-plot(jitter(locs$tclass), X$annual_specific_runoff, pch=".")
-
-plot(jitter(locs$aclass), X$annual_specific_runoff, pch=".")
-
-plot(jitter(locs$pclass), X$annual_specific_runoff, pch=".")
-
-
-
-
-
-
 

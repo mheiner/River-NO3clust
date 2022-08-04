@@ -1,26 +1,61 @@
 source("scripts/0_fast_dmvnorm.R")
 
-
 ## Estimate time, amplitude and phase for each river
 river.list <- split(rivers, f=rivers$CDSTATIONM)
 get.coefs <- function(a.dframe){
   river.coef <- coef(lm(log(NO3)~time+cos(2*pi*time)+sin(2*pi*time), 
                         data=a.dframe))[-1]
-  beta.time <- river.coef[1]
-  amp <- sqrt(sum(river.coef[-1]^2))
-  phase <- atan2(river.coef[3], river.coef[2])
-  return(c(beta.time, amp, phase))
+  beta.time <- unname(river.coef[1])
+  amp <- unname(sqrt(sum(river.coef[-1]^2)))
+  phase <- unname(atan2(river.coef[3], river.coef[2]))
+  return(c(time=beta.time, amp=amp, phase=phase))
 }
 river.coefs <- sapply(river.list, get.coefs) %>% t()
 
 ## Cluster based on estimates and define cluster centers (coefficient start vals)
-time.eff <- kmeans(river.coefs[,1], centers=K.time, iter.max=100)
-time.clust <- match(time.eff$cluster, order(time.eff$centers))
-time.eff <- sort(time.eff$centers)
+if (KMtype == "randcenters") {
+  # stopifnot(K.time %% 2 == 1) # K.time needs to be odd
+  # time.eff.KM <- kmeans(river.coefs[,"time"], 
+  #                    centers=c( sort(runif(floor(K.time/2), min=min(river.coefs[,"time"]), max=0.0)),  
+  #                               0.0,
+  #                               sort(runif(floor(K.time/2), min=0.0, max=max(river.coefs[,"time"]))) ), 
+  #                    iter.max=3)
+} else if (KMtype == "KM") {
+  # time.eff.KM <- kmeans(river.coefs[,"time"], centers=K.time, iter.max=100, nstart=50)
+} else if (KMtype == "supplied") {
+  time.eff.KM = list()
+  # time.eff.KM$centers = rnorm(K.time, mean=time_centers_init, sd=0.001)
+  time.eff.KM$centers = time_centers_init
+  time.eff.KM$cluster = sapply( river.coefs[,"time"], function(cf) which.min(abs(cf - time_centers_init)) )
+}
 
-amp <- kmeans(river.coefs[,2], centers=K.amp, iter.max=100)
-amp.clust <- match(amp$cluster, order(amp$centers))
-amp <- sort(amp$centers)
+trend0clust = order(time.eff.KM$centers)[floor(K.time/2)+1]
+cat("K-means trends:", sort(time.eff.KM$centers), "\n")
+print(paste("Converting K-means cluster with trend", time.eff.KM$centers[trend0clust], "to have trend 0."))
+time.eff.KM$centers[trend0clust] <- 0.0
+
+time.clust <- match(time.eff.KM$cluster, order(time.eff.KM$centers))
+time.eff <- sort(time.eff.KM$centers)
+kindx_trend0 <- which(time.eff == 0.0)
+
+
+if (KMtype == "randcenters") {
+  # amp.KM <- kmeans(river.coefs[,"amp"], 
+  #               centers = sort(sample(river.coefs[,"amp"], size = K.amp)),
+  #               # centers=sort(runif(K.amp, min=min(river.coefs[,"amp"]), max=max(river.coefs[,"amp"]))), 
+  #               iter.max=3)
+} else if (KMtype == "KM") {
+  # amp.KM <- kmeans(river.coefs[,"amp"], centers=K.amp, iter.max=100, nstart=50)
+} else if (KMtype == "supplied") {
+  amp.KM = list()
+  # amp.KM$centers = exp(rnorm(K.amp, mean=log(amp_centers_init), sd=0.001))
+  amp.KM$centers = amp_centers_init
+  amp.KM$cluster = sapply( river.coefs[,"amp"], function(cf) which.min(abs(cf - amp_centers_init)) )
+}
+
+cat("K-means amplitudes:", sort(amp.KM$centers), "\n")
+amp.clust <- match(amp.KM$cluster, order(amp.KM$centers))
+amp <- sort(amp.KM$centers)
 
 
 phase.clust <- cut(river.coefs[,3], breaks=seq(-pi, pi, length=K.phase+1), 
@@ -30,13 +65,13 @@ phase <- aggregate(river.coefs[,3], by=list(pc=phase.clust),
 
 ## Fix a few rivers to each cluster
 # n.fixed <- 15
-fixed.time.clust <- fields::rdist(river.coefs[,1], time.eff) %>% 
+fixed.time.clust <- fields::rdist(river.coefs[,"time"], time.eff) %>% 
   apply(., 2, function(x){order(x)[1:min(n.fixed, min(table(time.clust)))]})
 if (!is.matrix(fixed.time.clust)) {
   fixed.time.clust <- as.matrix(fixed.time.clust) %>% t()
 }
 
-fixed.amp.clust <- fields::rdist(river.coefs[,2], amp) %>% 
+fixed.amp.clust <- fields::rdist(river.coefs[,"amp"], amp) %>% 
   apply(., 2, function(x){order(x)[1:min(n.fixed, min(table(amp.clust))), drop=FALSE]})
 
 if (!is.matrix(fixed.amp.clust)) {
@@ -62,7 +97,6 @@ init.regression <- function(rn){
   ## Set up X-matrix for this regression
   X <- model.matrix(model, data=dframe)
   
-  ## Choose AR1 parameter and set up correlation matrix
   ## Choose AR1 parameter and set up correlation matrix
   res <- matrix(resid(lm(model, data=dframe)), nrow=1)
   lwr <- 1/(max(fields::rdist(river.list[[rn]]$time)) %>%
@@ -95,6 +129,7 @@ init.regression <- function(rn){
   ## Return list object
   return(list(df=dframe %>% dplyr::select(-phase),
               X=X,
+              R=R,
               Rinv=Rinv,
               Rchol=Rchol,
               Rinv_logdet=Rinv_logdet,
@@ -104,59 +139,60 @@ init.regression <- function(rn){
               sumR=sumR))
   
 }
-river.list <- lapply(1:length(river.list), init.regression)
 
-## PC regression matrices for cluster probs
-# X.clust <- rivers %>% group_by(CDSTATIONM) %>%
-#   summarize(Elevation=mean(elevation+2), Department=unique(LBDEPARTEM),
-#             bioGeoRegion=unique(bioGeoRegion), IDPR=mean(IDPR),
-#             annual_specific_runoff=mean(annual_specific_runoff),
-#             p_sedimentay=mean(p_sedimentay),
-#             p_waterbody=mean(p_waterbody),
-#             p_agricole_tot=mean(p_agricole_tot), p_forest=mean(p_forest),
-#             p_urban=mean(p_urban), p_other_land_uses=mean(p_other_land_uses))
-# X.clust <- fastDummies::dummy_cols(.data=X.clust, select_columns=c("Department", "bioGeoRegion"),
-#                                    remove_selected_columns=TRUE) %>%
-#   select(-1) %>% scale(.)
-# sf <- attr(X.clust, 'scaled:scale')
-# X.pc <- eigen(cor(X.clust), symmetric=TRUE)
-# n.pc <- which.min(abs(cumsum(X.pc$values)/sum(X.pc$values)-0.9))
-# X.clust <- X.clust%*%X.pc$vectors[,1:n.pc]
-# tclust.beta <- aclust.beta <-
-#   pclust.beta.x <- pclust.beta.y <- rep(0, ncol(X.clust))
-# time.draws <- matrix(NA, nrow=n.draws, ncol=K.time)
-# amp.draws <- matrix(NA, nrow=n.draws, ncol=K.amp)
-# phase.draws <- matrix(NA, nrow=n.draws, ncol=K.phase)
-# tclust.beta.draws <- aclust.beta.draws <-
-#   pclust.beta.x.draws <-
-#   pclust.beta.y.draws <- matrix(NA, nrow=n.draws, ncol=length(sf))
-# colnames(tclust.beta.draws) <- colnames(aclust.beta.draws) <-
-#   colnames(pclust.beta.x.draws) <- colnames(pclust.beta.y.draws) <- names(sf)
+river.list.full <- lapply(1:length(river.list), init.regression)
+river.list <- river.list.full
+river.list.cv <- river.list.full
+
+indx_cv = lapply(1:length(river.list), function(rn) sample(1:ncol(river.list[[rn]]$R), n_cv, replace=FALSE)) ## Can't have any random number generation before this
+cat("cv index for river 1:", indx_cv[[1]], "\n")
+cat("cv index for river 100:", indx_cv[[100]], "\n")
+
+for (rn in 1:length(river.list)) {
+  river.list.cv[[rn]]$df = river.list.cv[[rn]]$df[indx_cv[[rn]],]
+  river.list.cv[[rn]]$R = river.list.cv[[rn]]$R[indx_cv[[rn]], indx_cv[[rn]]]
+  river.list.cv[[rn]]$Rchol = t(chol(river.list.cv[[rn]]$R))
+  river.list.cv[[rn]]$Rinv = chol2inv(chol(river.list.cv[[rn]]$R))
+  river.list.cv[[rn]]$sumR = sum(river.list.cv[[rn]]$R)
+  river.list.cv[[rn]]$Rinv_logdet = determinant(river.list.cv[[rn]]$Rinv, logarithm=TRUE)
+  
+  river.list[[rn]]$df = river.list[[rn]]$df[-indx_cv[[rn]],]
+  river.list[[rn]]$R = river.list[[rn]]$R[-indx_cv[[rn]], -indx_cv[[rn]]]
+  river.list[[rn]]$Rchol = t(chol(river.list[[rn]]$R))
+  river.list[[rn]]$Rinv = chol2inv(chol(river.list[[rn]]$R))
+  river.list[[rn]]$sumR = sum(river.list[[rn]]$R)
+  river.list[[rn]]$Rinv_logdet = determinant(river.list[[rn]]$Rinv, logarithm=TRUE)
+}
 
 ## Regression matrices for cluster probs
 X.clust <- rivers %>% group_by(CDSTATIONM) %>%
-  summarize(Elevation=mean(elevation+2), Department=unique(LBDEPARTEM), Area=mean(area),
+  summarize(Elevation=mean(elevation+2), Department=unique(LBDEPARTEM), # Area=mean(area),
             bioGeoRegion=unique(bioGeoRegion), IDPR=mean(IDPR),
             annual_specific_runoff=mean(annual_specific_runoff),
             p_sedimentay=mean(p_sedimentay),
             p_waterbody=mean(p_waterbody),
-            p_wetland=mean(100 - p_waterbody - p_not_wetland)) 
-    mutate(., bioGeoRegion=as.factor(bioGeoRegion)) %>% mutate(., bioGeoRegion=relevel(bioGeoRegion, ref=2)) %>%
-    mutate(., Department=as.factor(Department)) %>% mutate(., Department=relevel(Department, ref=33)) %>%
-  model.matrix(~ Department + scale(log(Area)) + 
+            p_wetland=mean(100 - p_waterbody - p_not_wetland)) %>% 
+      mutate(., bioGeoRegion=as.factor(bioGeoRegion)) %>% mutate(., bioGeoRegion=relevel(bioGeoRegion, ref=2)) %>%
+      mutate(., Department=as.factor(Department)) %>% mutate(., Department=relevel(Department, ref=33)) %>%
+  model.matrix(~ Department + # scale(log(Area)) + 
                  scale(log(Elevation)) + bioGeoRegion + scale(IDPR) +
                  # scale(annual_specific_runoff) + 
                  scale(log(annual_specific_runoff)) +
                  scale(p_sedimentay) +
                  scale(log(p_waterbody+0.01)) + scale(log(p_wetland+0.01)), data=.)
+
 X.land <- rivers %>% group_by(CDSTATIONM) %>%
   summarize(p_agricole_tot=mean(p_agricole_tot), p_forest=mean(p_forest),
             p_urban=mean(p_urban), p_other_land_uses=mean(p_other_land_uses)) %>%
   dplyr::select(-CDSTATIONM) %>% scale(.)
+
 V.land <- eigen(cor(X.land))$vectors[,1:(ncol(X.land)-1)]
+
 X.clust <- cbind(X.clust, X.land%*%V.land)
+
 colnames(X.clust)[(ncol(X.clust)-2):ncol(X.clust)] <- paste0("V", 1:3)
-bta.post.var <- (t(X.clust)%*%X.clust+(1/10)*diag(ncol(X.clust))) %>%
+
+bta.post.var <- (t(X.clust)%*%X.clust + diag(c(0.001, rep(0.1, ncol(X.clust)-1))) ) %>% ## CHANGEed: freed up intcpt
   chol(.) %>% chol2inv(.)
 bta.post.var.chol <- chol(bta.post.var) %>% t(.)
 tclust.beta <- aclust.beta <-

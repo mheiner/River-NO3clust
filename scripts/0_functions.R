@@ -4,7 +4,7 @@ log.sum <- function(x){
   return(lsum)
 }
 
-update.intcpt.sig2 <- function(alist){
+update.intcpt.sig2 <- function(alist, n0=4.2, sig20=0.004761905){
   
   ## Center the observations
   y <- log(alist$df$NO3)-alist$df$time*time.eff[time.clust[alist$rn]] -
@@ -23,8 +23,8 @@ update.intcpt.sig2 <- function(alist){
   ## Sample new sig2
   y.cntr <- y-alist$intcpt
   ss <- t(y.cntr)%*%alist$Rinv%*%y.cntr
-  astar <- 2.1+n/2
-  bstar <- 0.01+0.5*ss
+  astar <- 0.5*(n0 + n)
+  bstar <- 0.5*(n0*sig20 + ss)
   alist$sig2 <- 1/rgamma(1, shape=astar, rate=bstar)
   
   ## Return updated list
@@ -51,11 +51,10 @@ get.llike <- function(alist){
   n <- length(y)
   
   ## Calculate the llike
-  ll <- -n/2*log(alist$sig2) - 0.5*t(y)%*%alist$Rinv%*%y/alist$sig2 + 0.5*alist$Rinv_logdet$modulus
+  ll <- -n/2*log(alist$sig2) - 0.5*t(y)%*%alist$Rinv%*%y/alist$sig2 + 0.5*alist$Rinv_logdet$modulus # is modified to include -0.5n*log(2pi) in model comparison code
   
   ## Return log-likelihood
   return(ll)
-  
 }
 
 
